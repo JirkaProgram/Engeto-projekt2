@@ -1,81 +1,127 @@
 import pytest
 import mysql.connector
-from mysql.connector import Error
+from unittest.mock import patch
+from task_manager_dva import pridat_ukol, aktualizovat_ukol, odstranit_ukol
 
-def pripoj_test_db():
+def pripojeni_test_db():
     return mysql.connector.connect(
-        host="127.0.0.1",
-        database="test_ukoly",
-        user="root",   
-        password="Okurkarka1."  
+            host="127.0.0.1",
+            database="test_ukoly",
+            user="root",   
+            password="Okurkarka1." 
     )
 
-def vycisti_tabulku(connection):
-    cursor = connection.cursor()
-    cursor.execute("DELETE FROM test_ukol")
-    connection.commit()
-
-def test_pridani_ukolu_ok():
-    conn = pripoj_test_db()
-    vycisti_tabulku(conn)
+@pytest.fixture(scope = "function")
+def test_db():
+    conn = pripojeni_test_db()
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO test_ukol (nazev, popis) VALUES (%s, %s)", ("Test úkol", "Popis"))
+    cursor.execute("DROP TABLE IF EXISTS ukoly")
+    cursor.execute('''
+        CREATE TABLE ukoly (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            nazev VARCHAR(255) NOT NULL,
+            popis TEXT NOT NULL,
+            stav ENUM('Nezahájeno', 'Probíhá', 'Hotovo') DEFAULT 'Nezahájeno',
+            datum_vytvoreni TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     conn.commit()
-
-    cursor.execute("SELECT COUNT(*) FROM test_ukol WHERE nazev = 'Test úkol'")
-    count = cursor.fetchone()[0]
-    assert count == 1
-    vycisti_tabulku(conn)
+    cursor.close()
+    
+    yield conn
+    
+    cursor = conn.cursor()
+    cursor.execute("DROP TABLE IF EXISTS ukoly")
+    conn.commit()
+    cursor.close()
     conn.close()
 
-def test_pridani_ukolu_neplatny():
-    conn = pripoj_test_db()
-    vycisti_tabulku(conn)
-    cursor = conn.cursor()
-    with pytest.raises(mysql.connector.Error):
-        cursor.execute("INSERT INTO test_ukol (nazev, popis) VALUES (%s, %s)", (None, "Popis bez názvu"))
-    conn.close()
+def test_pridat_ukol_pozitivni(test_db):
+    with patch('task_manager_dva.pripojeni_db', return_value = test_db), \
+         patch('builtins.input', side_effect = ["Test úkol", "Test popis"]), \
+         patch.object(test_db, 'close', lambda: None):
+        
+        pridat_ukol()
+    
+    cursor = test_db.cursor()
+    cursor.execute("SELECT * FROM ukoly")
+    result = cursor.fetchall()
+    cursor.close()
+    assert len(result) == 1
 
-def test_aktualizace_ukolu_ok():
-    conn = pripoj_test_db()
-    vycisti_tabulku(conn)
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO test_ukol (nazev, popis) VALUES (%s, %s)", ("Test úkol", "Popis"))
-    conn.commit()
-    cursor.execute("UPDATE test_ukol SET stav = %s WHERE nazev = %s", ("hotovo", "Test úkol"))
-    conn.commit()
+def test_pridat_ukol_negativni(test_db):
+    with patch('task_manager_dva.pripojeni_db', return_value = test_db), \
+         patch('builtins.input', side_effect = ["", ""]), \
+         patch.object(test_db, 'close', lambda: None):
+        
+        pridat_ukol()
+    
+    cursor = test_db.cursor()
+    cursor.execute("SELECT * FROM ukoly")
+    result = cursor.fetchall()
+    cursor.close()
+    assert len(result) == 0
 
-    cursor.execute("SELECT stav FROM test_ukol WHERE nazev = 'Test úkol'")
-    stav = cursor.fetchone()[0]
-    assert stav == "hotovo"
-    vycisti_tabulku(conn)
-    conn.close()
+def test_aktualizovat_ukol_pozitivni(test_db):
+    cursor = test_db.cursor()
+    cursor.execute("INSERT INTO ukoly (nazev, popis) VALUES (%s, %s)", ("Test", "Test"))
+    test_db.commit()
+    task_id = cursor.lastrowid
+    cursor.close()
 
-def test_aktualizace_neexistujiciho_ukolu():
-    conn = pripoj_test_db()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE test_ukol SET stav = %s WHERE id = %s", ("hotovo", -999))
-    conn.commit()
-    assert cursor.rowcount == 0
-    conn.close()
+    with patch('task_manager_dva.pripojeni_db', return_value = test_db), \
+         patch('builtins.input', side_effect=[str(task_id), "Hotovo"]), \
+         patch.object(test_db, 'close', lambda: None):
+        
+        aktualizovat_ukol()
+    
+    cursor = test_db.cursor()
+    cursor.execute("SELECT stav FROM ukoly WHERE id = %s", (task_id,))
+    result = cursor.fetchone()[0]
+    cursor.close()
+    assert result == "Hotovo"
 
-def test_odstraneni_ukolu_ok():
-    conn = pripoj_test_db()
-    vycisti_tabulku(conn)
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO test_ukol (nazev, popis) VALUES (%s, %s)", ("Test", "Popis"))
-    conn.commit()
+def test_aktualizovat_ukol_negativni(test_db):
+    with patch('task_manager_dva.pripojeni_db', return_value = test_db), \
+         patch('builtins.input', side_effect=["9999", "Hotovo"]), \
+         patch.object(test_db, 'close', lambda: None):
+        
+        aktualizovat_ukol()
+    
+    cursor = test_db.cursor()
+    cursor.execute("SELECT * FROM ukoly")
+    result = cursor.fetchall()
+    cursor.close()
+    assert len(result) == 0
 
-    cursor.execute("DELETE FROM test_ukol WHERE nazev = %s", ("Test",))
-    conn.commit()
-    assert cursor.rowcount == 1
-    vycisti_tabulku(conn)
-    conn.close()
+def test_odstranit_ukol_pozitivni(test_db):
+    cursor = test_db.cursor()
+    cursor.execute("INSERT INTO ukoly (nazev, popis) VALUES (%s, %s)", ("Test", "Test"))
+    test_db.commit()
+    task_id = cursor.lastrowid
+    cursor.close()
 
-def test_odstraneni_neexistujiciho_ukolu():
-    conn = pripoj_test_db()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM test_ukol WHERE id = %s", (-999,))
-    conn.commit()
-    assert cursor.rowcount == 0
-    conn.close()
+    with patch('task_manager_dva.pripojeni_db', return_value = test_db), \
+         patch('builtins.input', side_effect = [str(task_id)]), \
+         patch.object(test_db, 'close', lambda: None):
+        
+        odstranit_ukol()
+    
+    cursor = test_db.cursor()
+    cursor.execute("SELECT * FROM ukoly WHERE id = %s", (task_id,))
+    result = cursor.fetchall()
+    cursor.close()
+    assert len(result) == 0
+
+def test_odstranit_ukol_negativni(test_db):
+    with patch('task_manager_dva.pripojeni_db', return_value = test_db), \
+         patch('builtins.input', side_effect = ["9999"]), \
+         patch.object(test_db, 'close', lambda: None):
+        
+        odstranit_ukol()
+    
+    cursor = test_db.cursor()
+    cursor.execute("SELECT * FROM ukoly")
+    result = cursor.fetchall()
+    cursor.close()
+    assert len(result) == 0
